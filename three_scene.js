@@ -7,10 +7,11 @@ let animationFrameId = null;
 let starField, platform, gridHelper;
 const interactiveObjects = [];
 const appObjectMap = {}; // Maps appId -> 3D Object Reference
+const dynamicTextures = []; // Stores canvasses that animate every frame
 
 // Cyberpunk / Sci-Fi Theme Colors
 const COLORS = {
-  bg: 0x030308,
+  bg: 0x020206,
   platform: 0x0a0c14,
   neonCyan: 0x00f3ff,
   neonMagenta: 0xff007f,
@@ -34,9 +35,164 @@ function createNeonOutline(geometry, color) {
     color: color,
     linewidth: 2,
     transparent: true,
-    opacity: 0.8
+    opacity: 0.85
   });
   return new THREE.LineSegments(edges, lineMat);
+}
+
+// --- Text Texture Generators ---
+
+// 1. Billboarding HUD Labels (Floating floating text that bobs)
+function createHUDLabelTexture(text, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+
+  // Clear
+  ctx.clearRect(0, 0, 512, 128);
+
+  // Holographic bracket box
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 4;
+  ctx.strokeRect(10, 10, 492, 108);
+
+  // Brackets corners
+  ctx.fillStyle = color;
+  const len = 20;
+  // Top-Left
+  ctx.fillRect(10, 10, len, 6);
+  ctx.fillRect(10, 10, 6, len);
+  // Top-Right
+  ctx.fillRect(502 - len, 10, len, 6);
+  ctx.fillRect(496, 10, 6, len);
+  // Bottom-Left
+  ctx.fillRect(10, 112, len, 6);
+  ctx.fillRect(10, 118 - len, 6, len);
+  // Bottom-Right
+  ctx.fillRect(502 - len, 112, len, 6);
+  ctx.fillRect(496, 118 - len, 6, len);
+
+  // Font setup with glow
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = color;
+  ctx.font = 'bold 36px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 256, 64);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  return texture;
+}
+
+// Create floating billboarding sprite label
+function createFloatingLabel(text, color, pos) {
+  const texture = createHUDLabelTexture(text, color);
+  const spriteMat = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0.9,
+    depthTest: true
+  });
+  const sprite = new THREE.Sprite(spriteMat);
+  sprite.position.copy(pos);
+  sprite.scale.set(3.0, 0.75, 1.0); // Maintain proportion
+  
+  // Custom bobbing params
+  sprite.userData = {
+    isFloating: true,
+    baseY: pos.y,
+    bobOffset: Math.random() * Math.PI
+  };
+  
+  scene.add(sprite);
+  return sprite;
+}
+
+// 2. Animated CRT Monitor Screen Textures
+function createDynamicScreenTexture(appId, lines, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 384;
+  const ctx = canvas.getContext('2d');
+
+  const texture = new THREE.CanvasTexture(canvas);
+  
+  const screenObject = {
+    appId,
+    canvas,
+    ctx,
+    texture,
+    lines,
+    color,
+    scanY: 0,
+    cursorTick: 0
+  };
+
+  dynamicTextures.push(screenObject);
+  return texture;
+}
+
+// Update loop for CRT screens (Scanlines, flickering text)
+function updateDynamicScreens() {
+  const time = Date.now() * 0.001;
+
+  dynamicTextures.forEach((screen) => {
+    const ctx = screen.ctx;
+    const w = screen.canvas.width;
+    const h = screen.canvas.height;
+
+    // Dark screen background
+    ctx.fillStyle = '#060810';
+    ctx.fillRect(0, 0, w, h);
+
+    // Dynamic scan grid lines
+    ctx.strokeStyle = 'rgba(0, 243, 255, 0.05)';
+    ctx.lineWidth = 1;
+    const step = 24;
+    for (let x = 0; x < w; x += step) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = 0; y < h; y += step) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    // Border glowing layout lines
+    ctx.strokeStyle = screen.color;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(10, 10, w - 20, h - 20);
+
+    // Glowing Text setup
+    ctx.shadowColor = screen.color;
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = screen.color;
+    ctx.font = '28px monospace';
+    ctx.textAlign = 'left';
+
+    screen.lines.forEach((line, index) => {
+      ctx.fillText(line, 35, 60 + index * 48);
+    });
+
+    // Flickering console prompt cursor
+    screen.cursorTick++;
+    if (screen.cursorTick % 30 < 15) {
+      const lastLineY = 60 + (screen.lines.length - 1) * 48;
+      const textWidth = ctx.measureText(screen.lines[screen.lines.length - 1]).width;
+      ctx.fillRect(38 + textWidth, lastLineY - 24, 15, 26);
+    }
+
+    // Moving Laser Scanline
+    screen.scanY = (screen.scanY + 2.5) % h;
+    ctx.strokeStyle = screen.color;
+    ctx.lineWidth = 3;
+    ctx.globalAlpha = 0.25;
+    ctx.beginPath(); ctx.moveTo(10, screen.scanY); ctx.lineTo(w - 10, screen.scanY); ctx.stroke();
+    ctx.globalAlpha = 1.0;
+    ctx.shadowBlur = 0;
+
+    screen.texture.needsUpdate = true;
+  });
 }
 
 // --- Initialize Scene ---
@@ -55,7 +211,7 @@ export function initThreeScene() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.2;
+  renderer.toneMappingExposure = 1.25;
 
   // 2. Isometric Camera Setup
   const aspect = window.innerWidth / window.innerHeight;
@@ -70,44 +226,44 @@ export function initThreeScene() {
   camera.position.copy(defaultCameraPos);
   camera.lookAt(defaultTarget);
 
-  // 3. Orbit Controls (Rotation limiters to preserve isometric feel)
+  // 3. Orbit Controls
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
   controls.target.copy(defaultTarget);
-  controls.minZoom = 0.7;
+  controls.minZoom = 0.75;
   controls.maxZoom = 2.5;
   controls.enablePan = false;
-  controls.maxPolarAngle = Math.PI / 2.1; // Restrict looking under the platform
+  controls.maxPolarAngle = Math.PI / 2.1;
 
   // 4. Lighting Configuration
-  const ambientLight = new THREE.AmbientLight(0x0a1025, 0.8);
+  const ambientLight = new THREE.AmbientLight(0x0a1025, 0.85);
   scene.add(ambientLight);
 
-  const dirLight = new THREE.DirectionalLight(0x5a7dff, 0.8);
+  const dirLight = new THREE.DirectionalLight(0x6085ff, 0.9);
   dirLight.position.set(15, 30, 15);
   dirLight.castShadow = true;
   dirLight.shadow.mapSize.width = 1024;
   dirLight.shadow.mapSize.height = 1024;
   scene.add(dirLight);
 
-  // High-intensity Glowing Neon lights
-  const cyanLight = new THREE.PointLight(COLORS.neonCyan, 3, 10, 1.2);
+  // WebGL point lights (glowing spots on the platform)
+  const cyanLight = new THREE.PointLight(COLORS.neonCyan, 3.5, 10, 1.2);
   cyanLight.position.set(-2.5, 1.5, -2.5);
   scene.add(cyanLight);
 
-  const magentaLight = new THREE.PointLight(COLORS.neonMagenta, 3, 10, 1.2);
+  const magentaLight = new THREE.PointLight(COLORS.neonMagenta, 3.5, 10, 1.2);
   magentaLight.position.set(2.5, 1.5, 2.5);
   scene.add(magentaLight);
 
-  const greenLight = new THREE.PointLight(COLORS.neonGreen, 2, 8, 1.2);
+  const greenLight = new THREE.PointLight(COLORS.neonGreen, 2.5, 8, 1.2);
   greenLight.position.set(0, 1.8, 0);
   scene.add(greenLight);
 
   // 5. Build Platforms & Structures
   buildCommandDeck();
 
-  // 6. Build High-Detail Console Workstations
+  // 6. Build High-Detail Console Workstations & Screen Textures
   buildWorkstations();
 
   // 7. Add Floating Space Nebula Particles
@@ -136,7 +292,7 @@ export function stopThreeScene() {
   }
 
   scene.traverse((object) => {
-    if (!object.isMesh && !object.isLineSegments && !object.isPoints) return;
+    if (!object.isMesh && !object.isLineSegments && !object.isPoints && !object.isSprite) return;
     if (object.geometry) object.geometry.dispose();
     if (object.material) {
       if (Array.isArray(object.material)) {
@@ -148,6 +304,7 @@ export function stopThreeScene() {
   });
 
   interactiveObjects.length = 0;
+  dynamicTextures.length = 0;
   Object.keys(appObjectMap).forEach(key => delete appObjectMap[key]);
   
   if (controls) controls.dispose();
@@ -159,25 +316,28 @@ function animate() {
 
   const time = Date.now() * 0.001;
 
+  // Active scanline and text updates for CRT monitors
+  updateDynamicScreens();
+
   // Platform rotation (only if user is not interacting and camera is not zoomed)
   if (platform && !isZoomed) {
-    platform.rotation.y = Math.sin(time * 0.05) * 0.15; // Gentle sway
+    platform.rotation.y = Math.sin(time * 0.04) * 0.12; // Gentle sway
   }
 
   // Floating & Pulsing animations for holograms and elements
   scene.traverse((obj) => {
     // Gyroscope rings rotation
     if (obj.name === "gyroRing1") {
-      obj.rotation.x = time * 0.5;
-      obj.rotation.y = time * 0.2;
+      obj.rotation.x = time * 0.6;
+      obj.rotation.y = time * 0.25;
     }
     if (obj.name === "gyroRing2") {
-      obj.rotation.y = -time * 0.4;
-      obj.rotation.z = time * 0.3;
+      obj.rotation.y = -time * 0.5;
+      obj.rotation.z = time * 0.35;
     }
     if (obj.name === "quantumCore") {
-      obj.position.y = 1.0 + Math.sin(time * 2) * 0.08;
-      obj.scale.setScalar(1 + Math.sin(time * 3) * 0.06);
+      obj.position.y = 1.0 + Math.sin(time * 2.2) * 0.06;
+      obj.scale.setScalar(1 + Math.sin(time * 3.2) * 0.05);
     }
     // Float orbiting elements
     if (obj.userData && obj.userData.isOrbiting) {
@@ -185,15 +345,15 @@ function animate() {
       obj.rotation.y += 0.015;
       obj.rotation.z += 0.008;
     }
-    // Pulsing hologram opacity
-    if (obj.userData && obj.userData.isHologram) {
-      obj.material.opacity = obj.userData.baseOpacity + Math.sin(time * 5 + obj.userData.phase) * 0.12;
+    // Bobbing HUD labels
+    if (obj.userData && obj.userData.isFloating) {
+      obj.position.y = obj.userData.baseY + Math.sin(time * 3.0 + obj.userData.bobOffset) * 0.08;
     }
   });
 
   // Rotate background star field
   if (starField) {
-    starField.rotation.y = time * 0.015;
+    starField.rotation.y = time * 0.012;
   }
 
   controls.update();
@@ -230,7 +390,6 @@ function buildCommandDeck() {
   // Platform Cyber Grid Helper
   gridHelper = new THREE.GridHelper(9.5, 18, COLORS.neonCyan, COLORS.grid);
   gridHelper.position.y = 0.31;
-  // Apply opacity to grid lines
   gridHelper.material.transparent = true;
   gridHelper.material.opacity = 0.25;
   platformGroup.add(gridHelper);
@@ -286,36 +445,58 @@ function buildWorkstations() {
   const monitorGroup = new THREE.Group();
   monitorGroup.position.set(0, 1.05, 0.15);
 
-  const monitorMat = new THREE.MeshBasicMaterial({
-    color: COLORS.neonCyan,
-    transparent: true,
-    opacity: 0.45,
+  // Left screen: Project listing texture
+  const projLines = [
+    "SYS: WORKSTATION_A",
+    "SELECT_PROJECT...",
+    "1. CivicPulse (Civic)",
+    "2. GymMaster (Gym)",
+    "3. SuppSync (Health)"
+  ];
+  const projTexture = createDynamicScreenTexture('projects', projLines, COLORS.neonCyan);
+  const monitorMat1 = new THREE.MeshBasicMaterial({
+    map: projTexture,
     side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending
+    transparent: true,
+    opacity: 0.8
   });
 
-  // Left screen
-  const screen1 = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.55), monitorMat);
+  const screen1 = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.55), monitorMat1);
   screen1.position.set(-0.45, 0, 0);
   screen1.rotation.y = Math.PI / 10;
   monitorGroup.add(screen1);
-  monitorGroup.add(createNeonOutline(new THREE.BoxGeometry(0.85, 0.55, 0.02), COLORS.neonCyan));
+  
+  const frameGeo = new THREE.BoxGeometry(0.85, 0.55, 0.02);
+  const screenFrame1 = createNeonOutline(frameGeo, COLORS.neonCyan);
+  screenFrame1.position.copy(screen1.position);
+  screenFrame1.rotation.y = screen1.rotation.y;
+  monitorGroup.add(screenFrame1);
 
-  // Right screen
-  const screen2 = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.55), monitorMat);
+  // Right screen: Tech data lines
+  const dataLines = [
+    "DIAGNOSTICS: STABLE",
+    "LOAD: 12.4% / MERN",
+    "DB_CONN: CONNECTED",
+    "API_GATEWAY: ACTIVE",
+    "SSL: EXPIRES IN 365d"
+  ];
+  const dataTexture = createDynamicScreenTexture('projects_diagnostic', dataLines, COLORS.neonCyan);
+  const monitorMat2 = new THREE.MeshBasicMaterial({
+    map: dataTexture,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.8
+  });
+
+  const screen2 = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.55), monitorMat2);
   screen2.position.set(0.45, 0, 0);
   screen2.rotation.y = -Math.PI / 10;
   monitorGroup.add(screen2);
 
-  // Glow grids on screens
-  const screenGrid1 = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(0.85, 0.55, 4, 3)), new THREE.LineBasicMaterial({ color: COLORS.neonCyan, transparent: true, opacity: 0.3 }));
-  screenGrid1.position.copy(screen1.position);
-  screenGrid1.rotation.y = screen1.rotation.y;
-  monitorGroup.add(screenGrid1);
-  const screenGrid2 = screenGrid1.clone();
-  screenGrid2.position.copy(screen2.position);
-  screenGrid2.rotation.y = screen2.rotation.y;
-  monitorGroup.add(screenGrid2);
+  const screenFrame2 = createNeonOutline(frameGeo, COLORS.neonCyan);
+  screenFrame2.position.copy(screen2.position);
+  screenFrame2.rotation.y = screen2.rotation.y;
+  monitorGroup.add(screenFrame2);
 
   projectsGroup.add(monitorGroup);
 
@@ -332,6 +513,9 @@ function buildWorkstations() {
   interactiveObjects.push(projectsGroup);
   appObjectMap['projects'] = projectsGroup;
 
+  // Add billboarding HUD label
+  createFloatingLabel("PROJECTS", COLORS.neonCyan, new THREE.Vector3(-2.2, 2.1, -2.2));
+
 
   // ==========================================
   // 2. ABOUT ME & RESUME: Tech Whiteboard / Holographic Hub
@@ -339,7 +523,7 @@ function buildWorkstations() {
   const aboutGroup = new THREE.Group();
   aboutGroup.position.set(-3.0, 0.3, 1.2);
 
-  // Sleek stand
+  // Stand Base
   const standBase = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.15, 1.4), frameMat);
   standBase.position.y = 0.08;
   aboutGroup.add(standBase);
@@ -351,48 +535,39 @@ function buildWorkstations() {
   aboutGroup.add(holoFrame);
   aboutGroup.add(createNeonOutline(holoFrameGeo, COLORS.neonMagenta));
 
-  // The glowing display surface
+  // Glowing display surface with details drawn dynamically
+  const profileLines = [
+    "SYS: PROFILE_INFO",
+    "NAME: Diwaker Pandey",
+    "ROLE: CSE Dev / LPU",
+    "CGPA: 7.24 / B.Tech",
+    "SKILL: MERN + NextJS",
+    "LOC: Bihar, India",
+    "STATUS: OPEN TO WORK"
+  ];
+  const profileTexture = createDynamicScreenTexture('about', profileLines, COLORS.neonMagenta);
+
   const holoSurface = new THREE.Mesh(
     new THREE.PlaneGeometry(1.2, 1.8),
     new THREE.MeshBasicMaterial({
-      color: COLORS.neonMagenta,
+      map: profileTexture,
       transparent: true,
-      opacity: 0.3,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending
+      opacity: 0.75,
+      side: THREE.DoubleSide
     })
   );
   holoSurface.rotation.y = Math.PI / 2;
   holoSurface.position.set(0.05, 1.0, 0);
-  holoSurface.userData = { isHologram: true, baseOpacity: 0.3, phase: 0 };
   aboutGroup.add(holoSurface);
-
-  // Hologram details: code/profile graph wireframe lines
-  const detailGeo = new THREE.BufferGeometry();
-  const detailVertices = new Float32Array([
-    // Profile box outline
-    0.06, 1.4, -0.3,   0.06, 1.7, -0.3,
-    0.06, 1.7, -0.3,   0.06, 1.7, 0.0,
-    0.06, 1.7, 0.0,    0.06, 1.4, 0.0,
-    0.06, 1.4, 0.0,    0.06, 1.4, -0.3,
-    // Horizontal text lines
-    0.06, 1.6, 0.1,    0.06, 1.6, 0.4,
-    0.06, 1.5, 0.1,    0.06, 1.5, 0.35,
-    0.06, 1.4, 0.1,    0.06, 1.4, 0.45,
-    // Skill stats bar chart representation
-    0.06, 0.8, -0.4,   0.06, 0.8, 0.3,
-    0.06, 0.6, -0.4,   0.06, 0.6, 0.15,
-    0.06, 0.4, -0.4,   0.06, 0.4, 0.4
-  ]);
-  detailGeo.setAttribute('position', new THREE.BufferAttribute(detailVertices, 3));
-  const detailLines = new THREE.LineSegments(detailGeo, new THREE.LineBasicMaterial({ color: COLORS.neonMagenta }));
-  aboutGroup.add(detailLines);
 
   aboutGroup.userData = { appId: 'about' };
   platform.add(aboutGroup);
   interactiveObjects.push(aboutGroup);
   appObjectMap['about'] = aboutGroup;
   appObjectMap['resume'] = aboutGroup;
+
+  // Add billboarding HUD label
+  createFloatingLabel("ABOUT DIWAKER", COLORS.neonMagenta, new THREE.Vector3(-3.0, 2.7, 1.2));
 
 
   // ==========================================
@@ -421,7 +596,7 @@ function buildWorkstations() {
   terminalGroup.add(sphere);
 
   // Glowing rings representing magnetic confinement
-  const ring1Mat = new THREE.LineBasicMaterial({ color: COLORS.neonGreen, transparent: true, opacity: 0.8 });
+  const ring1Mat = new THREE.LineBasicMaterial({ color: COLORS.neonGreen, transparent: true, opacity: 0.85 });
   const ringGeo1 = new THREE.BufferGeometry();
   const ringPoints1 = [];
   const radius = 0.65;
@@ -448,13 +623,16 @@ function buildWorkstations() {
     -0.8, 0.25, 0.8,    -0.8, 1.8, 0.8
   ]);
   laserGeo.setAttribute('position', new THREE.BufferAttribute(laserVertices, 3));
-  const lasers = new THREE.LineSegments(laserGeo, new THREE.LineBasicMaterial({ color: COLORS.neonGreen, transparent: true, opacity: 0.4 }));
+  const lasers = new THREE.LineSegments(laserGeo, new THREE.LineBasicMaterial({ color: COLORS.neonGreen, transparent: true, opacity: 0.45 }));
   terminalGroup.add(lasers);
 
   terminalGroup.userData = { appId: 'term' };
   platform.add(terminalGroup);
   interactiveObjects.push(terminalGroup);
   appObjectMap['term'] = terminalGroup;
+
+  // Add billboarding HUD label
+  createFloatingLabel("TERMINAL", COLORS.neonGreen, new THREE.Vector3(0, 2.3, 0));
 
 
   // ==========================================
@@ -463,10 +641,10 @@ function buildWorkstations() {
   const snakeGroup = new THREE.Group();
   snakeGroup.position.set(2.4, 0.3, 2.4);
 
-  // Cabinet body (extrude look out of boxes)
+  // Cabinet body
   const cabBaseGeo = new THREE.BoxGeometry(0.9, 0.8, 0.9);
   const cabBase = new THREE.Mesh(cabBaseGeo, consolePanelMat);
-  cabBase.position.y = 0.4;
+  cabBase.position.y = 0.45;
   cabBase.castShadow = true;
   snakeGroup.add(cabBase);
   snakeGroup.add(createNeonOutline(cabBaseGeo, COLORS.neonCyan));
@@ -477,20 +655,27 @@ function buildWorkstations() {
   snakeGroup.add(cabTop);
   snakeGroup.add(createNeonOutline(cabTopGeo, COLORS.neonCyan));
 
-  // Glowing Arcade Screen
+  // Glowing Arcade Screen with dynamically updated retro UI lines
+  const arcadeLines = [
+    "SNAKE_OS v4.0",
+    "HI-SCORE: 995",
+    "PLAYING: ACTIVE",
+    " ",
+    "[INSERT COIN]"
+  ];
+  const arcadeTexture = createDynamicScreenTexture('snake', arcadeLines, COLORS.neonCyan);
+
   const arcScreen = new THREE.Mesh(
     new THREE.PlaneGeometry(0.65, 0.55),
     new THREE.MeshBasicMaterial({
-      color: COLORS.neonCyan,
+      map: arcadeTexture,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.8,
       side: THREE.DoubleSide
     })
   );
-  // Positioned facing outward (angled slightly down)
   arcScreen.position.set(-0.435, 1.15, 0);
   arcScreen.rotation.y = -Math.PI / 2;
-  arcScreen.userData = { isHologram: true, baseOpacity: 0.45, phase: Math.PI / 3 };
   snakeGroup.add(arcScreen);
 
   // Control deck shelf
@@ -521,20 +706,23 @@ function buildWorkstations() {
   interactiveObjects.push(snakeGroup);
   appObjectMap['snake'] = snakeGroup;
 
+  // Add billboarding HUD label
+  createFloatingLabel("SNAKE GAME", COLORS.neonCyan, new THREE.Vector3(2.4, 2.3, 2.4));
+
 
   // ==========================================
   // 5. ORBITING APP WIDGETS (Skills & GitHub)
   // ==========================================
   const widgets = [
-    { appId: 'github', color: COLORS.neonCyan, x: -3.5, z: -3.5, phase: 0 },
-    { appId: 'skills', color: COLORS.neonMagenta, x: 3.5, z: -3.5, phase: Math.PI }
+    { appId: 'github', label: 'GITHUB STATS', color: COLORS.neonCyan, x: -3.5, z: -3.5, phase: 0 },
+    { appId: 'skills', label: 'MY SKILLS', color: COLORS.neonMagenta, x: 3.5, z: -3.5, phase: Math.PI }
   ];
 
   widgets.forEach((w) => {
     const wGroup = new THREE.Group();
     wGroup.position.set(w.x, 2.0, w.z);
 
-    // Dynamic gemstone geometry
+    // Gemstone mesh
     const coreMesh = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.4),
       new THREE.MeshStandardMaterial({
@@ -548,7 +736,7 @@ function buildWorkstations() {
     wGroup.add(coreMesh);
     wGroup.add(createNeonOutline(new THREE.OctahedronGeometry(0.42), w.color));
 
-    // Outer orbital ring
+    // Orbit ring
     const orbitRingGeo = new THREE.BufferGeometry();
     const ringPoints = [];
     for (let i = 0; i <= 24; i++) {
@@ -556,7 +744,7 @@ function buildWorkstations() {
       ringPoints.push(new THREE.Vector3(Math.cos(theta) * 0.7, 0, Math.sin(theta) * 0.7));
     }
     orbitRingGeo.setFromPoints(ringPoints);
-    const orbitRing = new THREE.Line(orbitRingGeo, new THREE.LineBasicMaterial({ color: w.color, transparent: true, opacity: 0.6 }));
+    const orbitRing = new THREE.Line(orbitRingGeo, new THREE.LineBasicMaterial({ color: w.color, transparent: true, opacity: 0.65 }));
     wGroup.add(orbitRing);
 
     wGroup.userData = {
@@ -569,6 +757,9 @@ function buildWorkstations() {
     platform.add(wGroup);
     interactiveObjects.push(wGroup);
     appObjectMap[w.appId] = wGroup;
+
+    // Add HUD label above widget
+    createFloatingLabel(w.label, w.color, new THREE.Vector3(w.x, 2.8, w.z));
   });
 }
 
@@ -582,18 +773,17 @@ function buildSpaceNebula() {
   const colorPalette = [
     new THREE.Color(COLORS.neonCyan),
     new THREE.Color(COLORS.neonMagenta),
-    new THREE.Color(0x8a2be2), // Purple
-    new THREE.Color(0xffffff)   // White stars
+    new THREE.Color(0x8a2be2),
+    new THREE.Color(0xffffff)
   ];
 
   for (let i = 0; i < particleCount; i++) {
-    // Generate particles in shell around deck
     const radius = 15 + Math.random() * 22;
     const theta = Math.random() * Math.PI * 2;
     const phi = Math.acos(2 * Math.random() - 1);
 
     positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
-    positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta) - 2; // Shift slightly down
+    positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta) - 2;
     positions[i * 3 + 2] = radius * Math.cos(phi);
 
     const particleColor = colorPalette[Math.floor(Math.random() * colorPalette.length)];
@@ -674,10 +864,9 @@ function zoomToApp(targetPos) {
   isZoomed = true;
   controls.enabled = false;
 
-  // Frame offset positioned isometrically close to the targeted object
   const offset = new THREE.Vector3().copy(defaultCameraPos).normalize().multiplyScalar(4.0);
   const targetCamPos = new THREE.Vector3().copy(targetPos).add(offset);
-  targetCamPos.y += 0.4; // Align screen height
+  targetCamPos.y += 0.4;
 
   if (window.gsap) {
     window.gsap.to(camera.position, {
