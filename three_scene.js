@@ -42,8 +42,16 @@ function createNeonOutline(geometry, color) {
 
 // --- Text Texture Generators ---
 
+function getCSSColor(color) {
+  if (typeof color === 'number') {
+    return '#' + color.toString(16).padStart(6, '0');
+  }
+  return color;
+}
+
 // 1. Billboarding HUD Labels (Floating floating text that bobs)
 function createHUDLabelTexture(text, color) {
+  const cssColor = getCSSColor(color);
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 128;
@@ -53,12 +61,12 @@ function createHUDLabelTexture(text, color) {
   ctx.clearRect(0, 0, 512, 128);
 
   // Holographic bracket box
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = cssColor;
   ctx.lineWidth = 4;
   ctx.strokeRect(10, 10, 492, 108);
 
   // Brackets corners
-  ctx.fillStyle = color;
+  ctx.fillStyle = cssColor;
   const len = 20;
   // Top-Left
   ctx.fillRect(10, 10, len, 6);
@@ -74,9 +82,9 @@ function createHUDLabelTexture(text, color) {
   ctx.fillRect(496, 118 - len, 6, len);
 
   // Font setup with glow
-  ctx.shadowColor = color;
+  ctx.shadowColor = cssColor;
   ctx.shadowBlur = 12;
-  ctx.fillStyle = color;
+  ctx.fillStyle = cssColor;
   ctx.font = 'bold 36px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -112,6 +120,7 @@ function createFloatingLabel(text, color, pos) {
 
 // 2. Animated CRT Monitor Screen Textures
 function createDynamicScreenTexture(appId, lines, color) {
+  const cssColor = getCSSColor(color);
   const canvas = document.createElement('canvas');
   canvas.width = 512;
   canvas.height = 384;
@@ -125,7 +134,7 @@ function createDynamicScreenTexture(appId, lines, color) {
     ctx,
     texture,
     lines,
-    color,
+    color: cssColor,
     scanY: 0,
     cursorTick: 0
   };
